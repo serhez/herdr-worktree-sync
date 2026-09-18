@@ -86,6 +86,8 @@ pub struct Config {
     #[serde(default)]
     pub copy: CopyConfig,
     #[serde(default)]
+    pub clone: CloneConfig,
+    #[serde(default)]
     pub symlink: SymlinkConfig,
     #[serde(default)]
     pub install: InstallConfig,
@@ -196,6 +198,16 @@ pub struct CopyConfig {
 
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct CloneConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Relative paths or glob patterns to clone from the primary checkout.
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+#[derive(Deserialize, Default, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SymlinkConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -282,6 +294,7 @@ mod tests {
         // Every phase is opt-in: an empty config must do nothing at all.
         assert!(!config.git.update);
         assert!(!config.copy.enabled);
+        assert!(!config.clone.enabled);
         assert!(!config.symlink.enabled);
         assert!(!config.install.enabled);
         assert!(config.hooks.pre.is_empty());
@@ -365,6 +378,10 @@ mod tests {
             enabled = true
             files = [".pnpm-store", ".next/cache"]
 
+            [clone]
+            enabled = true
+            files = ["models/*.bin"]
+
             [install]
             enabled = true
             dirs = ["apps/web", "services/api"]
@@ -395,6 +412,7 @@ mod tests {
             config.symlink.files,
             [".pnpm-store", ".next/cache"].map(String::from)
         );
+        assert_eq!(config.clone.files, ["models/*.bin"].map(String::from));
         assert_eq!(config.install.rules.len(), 1);
         assert_eq!(config.install.rules[0].marker, "flake.nix");
         assert_eq!(config.hooks.pre.len(), 1);

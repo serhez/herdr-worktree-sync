@@ -42,6 +42,35 @@ fn sync_reapplies_copy_and_symlink_operations_to_the_focused_worktree() {
     assert!(worktree.path().join("cache").is_symlink());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn sync_reapplies_clone_operations_to_the_focused_worktree() {
+    let source = Dir::new();
+    source.write(
+        ".worktree-sync.toml",
+        r#"
+        [clone]
+        enabled = true
+        files = ["models/weights.bin"]
+        "#,
+    );
+    source.write("models/weights.bin", "WEIGHTS");
+    let worktree = Dir::new();
+    let context = serde_json::json!({
+        "worktree": {
+            "repo_root": source.path(),
+            "checkout_path": worktree.path(),
+            "is_linked_worktree": true
+        }
+    });
+
+    let summary =
+        action::sync(&context.to_string(), &PluginConfig::default()).expect("sync should succeed");
+
+    assert_eq!(summary.cloned, Some(1));
+    assert_eq!(worktree.read("models/weights.bin"), "WEIGHTS");
+}
+
 #[test]
 fn sync_refuses_to_apply_file_operations_to_the_primary_checkout() {
     let source = Dir::new();

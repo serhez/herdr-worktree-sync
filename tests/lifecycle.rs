@@ -19,7 +19,8 @@ fn setup(config_toml: &str) -> (Dir, Dir, config::Config) {
     (source, worktree, config)
 }
 
-/// The order the README promises: git update → pre → copy → install → post.
+/// The order the README promises: git update → pre → copy → clone → symlink →
+/// install → post.
 ///
 /// Copy has no hook of its own to log, so its position is pinned differently:
 /// the install rule's marker is the very file copy delivers, so `install` can
@@ -87,6 +88,31 @@ fn symlinks_are_created_before_dependency_installation() {
 
     assert_eq!(worktree.log_lines("log.txt"), ["install"]);
     assert_eq!(worktree.read("shared/marker.txt"), "shared");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn clones_are_created_before_dependency_installation() {
+    let (source, worktree, config) = setup(
+        r#"
+        [clone]
+        enabled = true
+        files = ["models/marker.bin"]
+
+        [install]
+        enabled = true
+
+        [[install.rules]]
+        marker = "models/marker.bin"
+        command = ["sh", "-c", "echo install >> log.txt"]
+        "#,
+    );
+    source.write("models/marker.bin", "model");
+
+    run(worktree.path(), Some(source.path()), &config).expect("bootstrap should succeed");
+
+    assert_eq!(worktree.log_lines("log.txt"), ["install"]);
+    assert_eq!(worktree.read("models/marker.bin"), "model");
 }
 
 #[test]
@@ -279,6 +305,15 @@ fn symlink_without_a_source_repo_is_an_error() {
     let (_source, worktree, config) = setup("[symlink]\nenabled = true\nfiles = [\".cache\"]\n");
 
     let err = run(worktree.path(), None, &config).expect_err("symlink needs a source repo");
+    assert!(err.to_string().contains("source repo_root"), "got: {err}");
+}
+
+#[test]
+fn clone_without_a_source_repo_is_an_error() {
+    let (_source, worktree, config) = setup("[clone]\nenabled = true\nfiles = [\"cache\"]\n");
+
+    let err = run(worktree.path(), None, &config).expect_err("clone needs a source repo");
+
     assert!(err.to_string().contains("source repo_root"), "got: {err}");
 }
 

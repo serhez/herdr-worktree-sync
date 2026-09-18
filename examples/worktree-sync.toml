@@ -3,7 +3,7 @@
 # Place this at `.worktree-sync.toml` in your repository. When the WorktreeSync
 # plugin creates a new worktree of this repo, it runs:
 #
-#     git update -> pre hooks -> copy -> install -> post hooks
+#     git update -> pre hooks -> copy -> clone -> symlink -> install -> post hooks
 #
 # Any non-zero exit aborts the whole bootstrap. If this file is absent, the
 # plugin does nothing.
@@ -25,6 +25,13 @@ enabled = true
 #
 # Or list relative paths, directories, or glob patterns (disables discovery):
 # files = [".env", "apps/web/.env.local"]
+
+# Make APFS copy-on-write clones. Clones behave as independent files but share
+# storage until either copy changes. This phase is macOS-only and fails rather
+# than falling back to a full copy when the volume does not support cloning.
+[clone]
+enabled = false
+# files = ["models/*.bin", "fixtures", ".venv"]
 
 # Share selected files or directories with the primary checkout. Entries may
 # be exact relative paths or glob patterns. Existing destinations are replaced

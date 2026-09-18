@@ -21,6 +21,10 @@ bootstrap repositories you trust.
 gitignored files such as `.env` into a new worktree, so those secrets are
 written to a second location on disk. Worktrees you delete still had them.
 
+**Cloned files are independent names backed by shared blocks.** APFS clones do
+not share later writes like symlinks do, but their original contents remain
+present in both filesystem locations. Treat cloned secrets like copied secrets.
+
 **Symlinked paths are shared state.** A write through a worktree symlink changes
 the primary checkout's file or directory. Use copies for branch-specific or
 untrusted state, and reserve symlinks for paths meant to be shared.
@@ -46,7 +50,7 @@ advisory published alongside it.
 
 ## Scope
 
-In scope: this plugin's own code — the copy, symlink, install, hook, and
+In scope: this plugin's own code — the copy, clone, symlink, install, hook, and
 config-loading paths.
 
 Out of scope: [herdr](https://github.com/herdrdev/herdr) itself (report there),

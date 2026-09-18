@@ -138,3 +138,17 @@ fn a_custom_repo_config_path_uses_its_extension_to_choose_the_parser() {
 
     assert!(config.copy.enabled);
 }
+
+#[test]
+fn clone_paths_are_part_of_the_repo_config_schema() {
+    let repo = Dir::new();
+    repo.write(
+        ".worktree-sync.toml",
+        "[clone]\nenabled = true\nfiles = [\"models/*.bin\", \"cache\"]\n",
+    );
+
+    let config = config::load(repo.path(), &PluginConfig::default()).expect("config should load");
+
+    assert!(config.clone.enabled);
+    assert_eq!(config.clone.files, ["models/*.bin", "cache"]);
+}

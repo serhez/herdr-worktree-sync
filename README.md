@@ -2,7 +2,7 @@
 
 # Worktree Sync for Herdr
 
-**Copy or symlink local files, install dependencies, and run hooks when a worktree is born.**
+**Copy, clone, or symlink local files, install dependencies, and run hooks when a worktree is born.**
 
 [![CI](https://github.com/serhez/herdr-worktree-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/serhez/herdr-worktree-sync/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -13,10 +13,10 @@
 </div>
 
 A [Herdr](https://github.com/herdrdev/herdr) plugin that prepares freshly
-created git worktrees: it copies gitignored files (like `.env`), symlinks shared
-files or directories, installs dependencies, and runs your own pre/post commands
-automatically on `worktree.created`. Its `sync` action can re-apply the copy and
-symlink operations later.
+created git worktrees: it copies gitignored files (like `.env`), makes APFS
+copy-on-write clones, symlinks shared files or directories, installs
+dependencies, and runs your own pre/post commands automatically on
+`worktree.created`. Its `sync` action can re-apply all file operations later.
 
 This project is a fork of
 [piesuke/herdr-worktree-bootstrap](https://github.com/piesuke/herdr-worktree-bootstrap).
@@ -43,10 +43,12 @@ command = ["direnv", "allow"]
 - **Copies what a fresh checkout is missing** — env files and other gitignored
   paths, found recursively via git itself, so nested `.gitignore`s and negations
   just work. Monorepo-safe.
-- **Copies or links explicit paths** — exact paths, directories, and glob
-  patterns can be copied or symlinked from the primary checkout.
-- **Re-applies file operations** — the `sync` plugin action repairs copied files
-  and links in the focused worktree without rerunning setup commands.
+- **Copies, clones, or links explicit paths** — exact paths, directories, and
+  glob patterns can use the ownership semantics each path needs.
+- **Uses APFS copy-on-write clones** — independent files without an immediate
+  second full copy of their data; changed blocks diverge later.
+- **Re-applies file operations** — the `sync` plugin action repairs copied,
+  cloned, and linked paths without rerunning setup commands.
 - **Detects the package manager** — 37 built-in markers, from `bun.lockb` to
   `shard.yml`, with per-repo rules that override them.
 - **Runs your own commands** — `pre`/`post` hooks, each optionally scoped to one
@@ -88,6 +90,7 @@ Herdr (worktree.created)
        ├─ git update     bring git up to date (e.g. fetch) — optional
        ├─ pre hooks      commands run before file operations/install
        ├─ copy           <repo>/<path>  ->  <worktree>/<path>
+       ├─ clone          <repo>/<path>  =>  <worktree>/<path> (APFS CoW)
        ├─ symlink        <repo>/<path>  ->  <worktree>/<path>
        ├─ install        detect package manager from lockfiles, install
        ├─ post hooks     commands run after file operations + install
@@ -95,8 +98,8 @@ Herdr (worktree.created)
        └─ on failure     full report in a pane, and optionally a rollback
 ```
 
-Lifecycle order: **git update → pre → copy → symlink → install → post**. Any non-zero
-exit aborts the whole setup (fail-fast). If a repo has no config file, the
+Lifecycle order: **git update → pre → copy → clone → symlink → install → post**.
+Any non-zero exit aborts the whole setup (fail-fast). If a repo has no config file, the
 plugin does nothing. Whatever the outcome, the run ends with a toast — see
 [`[notify]`](#notify--announce-the-result) for the herdr setting it needs — and
 a failure additionally opens the
@@ -307,6 +310,29 @@ Existing destinations are replaced. When a directory is copied, unrelated
 files already present in its destination are retained while matching entries
 are updated. Source symlinks are preserved rather than followed. Repository
 root and `.git` matches are rejected to protect worktree metadata.
+
+### `[clone]` — make APFS copy-on-write clones
+
+Creates independent files at the same paths while initially sharing their data
+blocks with the primary checkout. Writes to either side use new blocks and do
+not change the other file:
+
+```toml
+[clone]
+enabled = true
+files = ["models/*.bin", "fixtures", ".venv"]
+```
+
+Entries use the same exact paths, directories, and glob patterns as explicit
+copy mode. Directories are walked and each regular file is cloned separately;
+source symlinks are preserved. Existing destinations are replaced, while
+unrelated files in destination directories are retained.
+
+This phase is available only on macOS and both paths must be on volumes that
+support `clonefile(2)`, normally APFS. It deliberately fails on Linux,
+non-clone-capable filesystems, or cross-volume operations instead of silently
+falling back to a full copy. Repository root, `.git`, absolute paths, and parent
+traversal are rejected.
 
 ### `[symlink]` — share files and directories with the primary checkout
 
@@ -560,7 +586,7 @@ via a non-forcing `git branch -d` that refuses if you committed something).
 │   ├── lib.rs               # run(): the bootstrap lifecycle
 │   ├── event.rs             # HERDR_PLUGIN_EVENT_JSON types
 │   ├── config.rs            # plugin settings and per-repo config loading
-│   ├── bootstrap.rs         # copy / symlink / install / hook execution
+│   ├── bootstrap.rs         # copy / clone / symlink / install / hook execution
 │   ├── herdr.rs             # which herdr binary the plugin calls back into
 │   ├── notify.rs            # the end-of-run herdr toast
 │   ├── report.rs            # the full failure report and the pane showing it
@@ -569,6 +595,7 @@ via a non-forcing `git branch -d` that refuses if you committed something).
     ├── common/mod.rs        # temp dirs and throwaway git repos
     ├── config_load.rs       # which config file wins; the examples still parse
     ├── copy.rs              # discovery and explicit copying
+    ├── clone.rs             # APFS copy-on-write cloning
     ├── symlink.rs           # declarative shared paths
     ├── sync.rs              # manual action context and behavior
     ├── lifecycle.rs         # phase order and fail-fast
@@ -604,7 +631,7 @@ shell hooks, because delegating to `git ls-files` and exec'ing commands *is* the
 behaviour under test.
 
 **Linux and macOS only.** The integration tests shell out to `sh`, and the
-manifest declares those two platforms.
+manifest declares those two platforms. The `[clone]` phase itself is macOS-only.
 
 ## Contributing
 

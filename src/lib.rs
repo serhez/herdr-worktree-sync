@@ -22,15 +22,17 @@ use crate::config::Config;
 
 /// What a [`run`] actually did, for the end-of-run notification.
 ///
-/// The copy, symlink, and install fields are `Option` so that "the phase was disabled"
-/// stays distinguishable from "the phase ran and found nothing". Only the
-/// second is worth reporting, and it is the harder of the two to diagnose
-/// from the outside — it looks identical to a phase that never ran.
+/// The file-operation and install fields are `Option` so that "the phase was
+/// disabled" stays distinguishable from "the phase ran and found nothing".
+/// Only the second is worth reporting, and it is the harder of the two to
+/// diagnose from the outside — it looks identical to a phase that never ran.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Summary {
     pub git_updated: bool,
     /// Files copied, when the copy phase ran.
     pub copied: Option<usize>,
+    /// Files cloned, when the APFS clone phase ran.
+    pub cloned: Option<usize>,
     /// Paths linked, when the symlink phase ran.
     pub linked: Option<usize>,
     /// The command run in each install directory, when the install phase ran.
@@ -48,14 +50,14 @@ impl Summary {
 
 /// Run the whole bootstrap lifecycle against `worktree`.
 ///
-/// Phases run in a fixed order — **git update → pre hooks → copy → install →
-/// post hooks** — and the first failure aborts the rest (fail-fast), leaving the
-/// worktree partially bootstrapped rather than silently continuing past a broken
-/// step. What becomes of that worktree afterwards is the caller's decision, via
-/// [`config::OnFailure`].
+/// Phases run in a fixed order — **git update → pre hooks → copy → clone →
+/// symlink → install → post hooks** — and the first failure aborts the rest
+/// (fail-fast), leaving the worktree partially bootstrapped rather than silently
+/// continuing past a broken step. What becomes of that worktree afterwards is
+/// the caller's decision, via [`config::OnFailure`].
 ///
 /// `source` is the repo the worktree was derived from. It is only needed by the
-/// copy and symlink phases; the other phases operate entirely inside
+/// copy, clone, and symlink phases; the other phases operate entirely inside
 /// `worktree`.
 pub fn run(worktree: &Path, source: Option<&Path>, config: &Config) -> Result<Summary> {
     let mut summary = Summary::default();
@@ -70,6 +72,7 @@ pub fn run(worktree: &Path, source: Option<&Path>, config: &Config) -> Result<Su
 
     let file_summary = sync_files(worktree, source, config)?;
     summary.copied = file_summary.copied;
+    summary.cloned = file_summary.cloned;
     summary.linked = file_summary.linked;
 
     if config.install.enabled {
@@ -86,11 +89,11 @@ pub fn run(worktree: &Path, source: Option<&Path>, config: &Config) -> Result<Su
     Ok(summary)
 }
 
-/// Apply only the declared copy and symlink operations. This is shared by the
-/// creation lifecycle and the manual `sync` plugin action.
+/// Apply only the declared copy, clone, and symlink operations. This is shared
+/// by the creation lifecycle and the manual `sync` plugin action.
 pub fn sync_files(worktree: &Path, source: Option<&Path>, config: &Config) -> Result<Summary> {
     let mut summary = Summary::default();
-    if config.copy.enabled || config.symlink.enabled {
+    if config.copy.enabled || config.clone.enabled || config.symlink.enabled {
         let src = source.context("file operations are enabled but there is no source repo_root")?;
         if src == worktree {
             anyhow::bail!("file operations require a linked worktree, not the primary checkout");
@@ -101,6 +104,9 @@ pub fn sync_files(worktree: &Path, source: Option<&Path>, config: &Config) -> Re
                 Some(files) => bootstrap::copy_files(src, worktree, files)?,
                 None => bootstrap::copy_gitignored(src, worktree, config.copy.patterns.as_deref())?,
             });
+        }
+        if config.clone.enabled {
+            summary.cloned = Some(bootstrap::clone_files(src, worktree, &config.clone.files)?);
         }
         if config.symlink.enabled {
             summary.linked = Some(bootstrap::symlink_files(

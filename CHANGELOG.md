@@ -14,9 +14,11 @@ changes are called out under **Changed** or **Removed**, never **Added**.
 
 ### Added
 
+- `[clone]` APFS copy-on-write operations for exact paths, directories, and
+  glob patterns on macOS.
 - `[symlink]` file operations for exact paths, directories, and glob patterns.
 - Glob and recursive-directory support for explicit `[copy].files` entries.
-- A `sync` plugin action that reapplies copy and symlink operations to the
+- A `sync` plugin action that reapplies copy, clone, and symlink operations to the
   focused linked worktree without rerunning hooks or dependency installation.
 - User-level `repo_config_path` setting for replacing the default per-repo
   config path with a custom relative TOML or YAML path. The default is

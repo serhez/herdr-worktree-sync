@@ -88,6 +88,12 @@ fn describe(summary: &Summary) -> String {
         Some(1) => lines.push("copied 1 file".to_string()),
         Some(n) => lines.push(format!("copied {n} files")),
     }
+    match summary.cloned {
+        None => {}
+        Some(0) => lines.push("cloned no files".to_string()),
+        Some(1) => lines.push("cloned 1 file".to_string()),
+        Some(n) => lines.push(format!("cloned {n} files")),
+    }
     match summary.linked {
         None => {}
         Some(0) => lines.push("linked no paths".to_string()),
@@ -172,6 +178,7 @@ mod tests {
         Summary {
             git_updated: true,
             copied: Some(3),
+            cloned: Some(4),
             linked: Some(2),
             installed: Some(vec!["pnpm install".to_string(), "uv sync".to_string()]),
             hooks_run: 2,
@@ -196,7 +203,7 @@ mod tests {
         assert_eq!(toast.title, "Worktree sync done · worktree/silver-stone");
         assert_eq!(
             toast.body,
-            "updated git\ncopied 3 files\nlinked 2 paths\npnpm install\nuv sync\nran 2 hooks"
+            "updated git\ncopied 3 files\ncloned 4 files\nlinked 2 paths\npnpm install\nuv sync\nran 2 hooks"
         );
         assert_eq!(toast.sound, "done");
     }

@@ -1,4 +1,4 @@
-//! The three bootstrap phases: copy, install, run.
+//! Worktree file operations, dependency installation, and hooks.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -118,6 +118,116 @@ pub fn copy_files(source: &Path, worktree: &Path, files: &[String]) -> Result<us
         println!("[copy] {}", relative.display());
     }
     Ok(copied)
+}
+
+/// Create copy-on-write clones of relative files, directories, or glob matches.
+/// Existing destinations are replaced. The operation is deliberately strict:
+/// unsupported platforms or filesystems return an error rather than silently
+/// falling back to a byte-for-byte copy.
+pub fn clone_files(source: &Path, worktree: &Path, files: &[String]) -> Result<usize> {
+    let entries = expand_file_entries(source, files)?;
+    ensure_clone_platform_supported()?;
+
+    let mut cloned = 0usize;
+    for (src, relative) in entries {
+        prepare_destination_parent(worktree, &relative)?;
+        cloned += clone_entry(&src, &worktree.join(&relative))?;
+        println!("[clone] {}", relative.display());
+    }
+    Ok(cloned)
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_clone_platform_supported() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_clone_platform_supported() -> Result<()> {
+    bail!("APFS file cloning is only supported on macOS")
+}
+
+/// Recursively reproduce a filesystem entry, cloning each regular file rather
+/// than asking `clonefile(2)` to clone a directory hierarchy. Apple explicitly
+/// discourages using that API recursively on a directory.
+#[cfg(target_os = "macos")]
+fn clone_entry(src: &Path, dst: &Path) -> Result<usize> {
+    let metadata = src
+        .symlink_metadata()
+        .with_context(|| format!("reading metadata for {}", src.display()))?;
+
+    if metadata.file_type().is_symlink() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        remove_destination(dst)?;
+        let target =
+            fs::read_link(src).with_context(|| format!("reading symlink {}", src.display()))?;
+        std::os::unix::fs::symlink(&target, dst)
+            .with_context(|| format!("cloning symlink {}", src.display()))?;
+        return Ok(1);
+    }
+
+    if metadata.is_dir() {
+        if let Ok(destination_metadata) = dst.symlink_metadata()
+            && !destination_metadata.is_dir()
+        {
+            remove_destination(dst)?;
+        }
+        fs::create_dir_all(dst).with_context(|| format!("creating {}", dst.display()))?;
+        let mut cloned = 0;
+        for entry in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+            let entry = entry?;
+            cloned += clone_entry(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        return Ok(cloned);
+    }
+
+    if metadata.is_file() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        remove_destination(dst)?;
+        clone_regular_file(src, dst)?;
+        return Ok(1);
+    }
+
+    println!("[clone] skip (unsupported file type): {}", src.display());
+    Ok(0)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clone_entry(_src: &Path, _dst: &Path) -> Result<usize> {
+    unreachable!("platform support is checked before cloning entries")
+}
+
+#[cfg(target_os = "macos")]
+fn clone_regular_file(src: &Path, dst: &Path) -> Result<()> {
+    use std::ffi::{CString, c_char};
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn clonefile(src: *const c_char, dst: *const c_char, flags: u32) -> i32;
+    }
+
+    let src_c = CString::new(src.as_os_str().as_bytes())
+        .with_context(|| format!("source path contains a NUL byte: {}", src.display()))?;
+    let dst_c = CString::new(dst.as_os_str().as_bytes())
+        .with_context(|| format!("destination path contains a NUL byte: {}", dst.display()))?;
+
+    // SAFETY: both pointers come from live `CString`s, are NUL-terminated, and
+    // remain valid for the duration of the call. The destination was removed
+    // immediately above because `clonefile` requires it not to exist.
+    if unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) } == -1 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "APFS-cloning {} to {} (both paths must be on a clone-capable volume)",
+                src.display(),
+                dst.display()
+            )
+        });
+    }
+    Ok(())
 }
 
 /// Symlink relative paths or glob matches from the source repo into a

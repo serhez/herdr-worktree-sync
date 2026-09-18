@@ -12,7 +12,7 @@ command = ["cargo", "fetch"]
 command = ["cargo", "build", "--release"]
 
 # On worktree.created, run the sync binary. It reads per-repo settings
-# (copy / symlink / install / hooks) from the configured file inside each repo
+# (copy / clone / symlink / install / hooks) from the configured file inside each repo
 # — see examples/worktree-sync.toml for the schema.
 [[events]]
 on = "worktree.created"
@@ -21,7 +21,7 @@ command = ["./target/release/herdr-worktree-sync"]
 [[actions]]
 id = "sync"
 title = "Sync worktree files"
-description = "Re-apply configured copy and symlink operations to the focused worktree"
+description = "Re-apply configured copy, clone, and symlink operations to the focused worktree"
 contexts = ["workspace"]
 command = ["./target/release/herdr-worktree-sync"]
 
