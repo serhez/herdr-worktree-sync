@@ -1,6 +1,8 @@
 //! The three bootstrap phases: copy, install, run.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -111,17 +113,120 @@ pub fn git_update(worktree: &Path, command: Option<&[String]>) -> Result<()> {
 /// files were actually copied, which is what the end-of-run toast reports.
 pub fn copy_files(source: &Path, worktree: &Path, files: &[String]) -> Result<usize> {
     let mut copied = 0usize;
-    for file in files {
-        let src = source.join(file);
-        if !src.exists() {
-            println!("[copy] skip (missing in source): {file}");
-            continue;
-        }
-        copy_into_worktree(&src, worktree, Path::new(file))?;
-        println!("[copy] {file}");
-        copied += 1;
+    for (src, relative) in expand_file_entries(source, files)? {
+        copied += copy_into_worktree(&src, worktree, &relative)?;
+        println!("[copy] {}", relative.display());
     }
     Ok(copied)
+}
+
+/// Symlink relative paths or glob matches from the source repo into a
+/// worktree. Existing destinations are replaced so the operation can repair a
+/// stale or deleted link when manually re-applied.
+pub fn symlink_files(source: &Path, worktree: &Path, files: &[String]) -> Result<usize> {
+    let entries = expand_file_entries(source, files)?;
+    for (src, relative) in &entries {
+        prepare_destination_parent(worktree, relative)?;
+        let destination = worktree.join(relative);
+        remove_destination(&destination)?;
+
+        let parent = destination
+            .parent()
+            .context("symlink destination has no parent directory")?;
+        let target = pathdiff::diff_paths(src, parent)
+            .context("could not make symlink target relative to its destination")?;
+        std::os::unix::fs::symlink(&target, &destination).with_context(|| {
+            format!(
+                "symlinking {} -> {}",
+                destination.display(),
+                target.display()
+            )
+        })?;
+        println!("[symlink] {}", relative.display());
+    }
+    Ok(entries.len())
+}
+
+/// Resolve exact relative paths and glob patterns without allowing a pattern
+/// to reach outside the source repository. If a directory and one of its
+/// descendants both match, keep only the directory operation; processing both
+/// would duplicate a copy and could traverse a symlink created moments ago.
+fn expand_file_entries(source: &Path, patterns: &[String]) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut matches = BTreeMap::new();
+    for pattern in patterns {
+        validate_relative_pattern(pattern)?;
+        let full_pattern = source.join(pattern);
+        let full_pattern = full_pattern
+            .to_str()
+            .with_context(|| format!("file pattern is not valid UTF-8: {pattern}"))?;
+        let mut matched = false;
+        for entry in
+            glob::glob(full_pattern).with_context(|| format!("invalid file pattern `{pattern}`"))?
+        {
+            let path = entry.with_context(|| format!("expanding file pattern `{pattern}`"))?;
+            let relative = path
+                .strip_prefix(source)
+                .with_context(|| format!("matched path escaped source repo: {}", path.display()))?
+                .to_path_buf();
+            validate_file_operation_match(&relative)?;
+            matches.insert(relative, path);
+            matched = true;
+        }
+        if !matched {
+            println!("[files] skip (no matches): {pattern}");
+        }
+    }
+
+    let mut candidates: Vec<_> = matches.into_iter().collect();
+    candidates.sort_by(|(left, _), (right, _)| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut directory_roots = Vec::new();
+    let mut entries = Vec::new();
+    for (relative, path) in candidates {
+        if directory_roots
+            .iter()
+            .any(|root: &PathBuf| relative.starts_with(root))
+        {
+            continue;
+        }
+        if path
+            .symlink_metadata()
+            .with_context(|| format!("reading metadata for {}", path.display()))?
+            .is_dir()
+        {
+            directory_roots.push(relative.clone());
+        }
+        entries.push((path, relative));
+    }
+    Ok(entries)
+}
+
+fn validate_relative_pattern(pattern: &str) -> Result<()> {
+    let path = Path::new(pattern);
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        bail!("file pattern must be relative to the source repo: `{pattern}`");
+    }
+    Ok(())
+}
+
+fn validate_file_operation_match(relative: &Path) -> Result<()> {
+    let first = relative.components().next();
+    if first.is_none() || first == Some(Component::Normal(".git".as_ref())) {
+        bail!(
+            "file operations cannot replace Git metadata: {}",
+            relative.display()
+        );
+    }
+    Ok(())
 }
 
 /// Recursively discover **gitignored** files in the source repo whose basename
@@ -203,14 +308,111 @@ pub fn copy_gitignored(
 }
 
 /// Copy `src` to `worktree/rel`, creating parent directories as needed.
-fn copy_into_worktree(src: &Path, worktree: &Path, rel: &Path) -> Result<()> {
+fn copy_into_worktree(src: &Path, worktree: &Path, rel: &Path) -> Result<usize> {
+    prepare_destination_parent(worktree, rel)?;
     let dst = worktree.join(rel);
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+    copy_entry(src, &dst)
+}
+
+/// Ensure every destination parent is a real directory inside the worktree.
+/// A stale link from an earlier configuration must be removed before a nested
+/// operation, or filesystem calls would follow it outside the worktree.
+fn prepare_destination_parent(worktree: &Path, relative: &Path) -> Result<()> {
+    let mut current = worktree.to_path_buf();
+    let Some(parent) = relative.parent() else {
+        return Ok(());
+    };
+    for component in parent.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(name) => current.push(name),
+            _ => bail!(
+                "destination path must be relative to the worktree: {}",
+                relative.display()
+            ),
+        }
+
+        match current.symlink_metadata() {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                remove_destination(&current)?;
+                fs::create_dir(&current)
+                    .with_context(|| format!("creating {}", current.display()))?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .with_context(|| format!("creating {}", current.display()))?;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("inspecting {}", current.display()));
+            }
+        }
     }
-    std::fs::copy(src, &dst)
-        .with_context(|| format!("copying {} -> {}", src.display(), dst.display()))?;
+    Ok(())
+}
+
+/// Recursively copy one filesystem entry. Existing directories are merged;
+/// conflicting files, directories, or links are replaced without following
+/// destination symlinks.
+fn copy_entry(src: &Path, dst: &Path) -> Result<usize> {
+    let metadata = src
+        .symlink_metadata()
+        .with_context(|| format!("reading metadata for {}", src.display()))?;
+
+    if metadata.file_type().is_symlink() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        remove_destination(dst)?;
+        let target =
+            fs::read_link(src).with_context(|| format!("reading symlink {}", src.display()))?;
+        std::os::unix::fs::symlink(&target, dst)
+            .with_context(|| format!("copying symlink {} -> {}", src.display(), dst.display()))?;
+        return Ok(1);
+    }
+
+    if metadata.is_dir() {
+        if let Ok(destination_metadata) = dst.symlink_metadata()
+            && !destination_metadata.is_dir()
+        {
+            remove_destination(dst)?;
+        }
+        fs::create_dir_all(dst).with_context(|| format!("creating {}", dst.display()))?;
+        let mut copied = 0;
+        for entry in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+            let entry = entry?;
+            copied += copy_entry(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        return Ok(copied);
+    }
+
+    if metadata.is_file() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        remove_destination(dst)?;
+        fs::copy(src, dst)
+            .with_context(|| format!("copying {} -> {}", src.display(), dst.display()))?;
+        return Ok(1);
+    }
+
+    println!("[copy] skip (unsupported file type): {}", src.display());
+    Ok(0)
+}
+
+fn remove_destination(path: &Path) -> Result<()> {
+    let metadata = match path.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("inspecting {}", path.display()));
+        }
+    };
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))?;
+    } else {
+        fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+    }
     Ok(())
 }
 

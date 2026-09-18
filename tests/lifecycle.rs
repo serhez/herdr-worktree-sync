@@ -7,14 +7,15 @@
 mod common;
 
 use common::Dir;
-use herdr_worktree_bootstrap::{config, run};
+use herdr_worktree_sync::{config, run};
 
 /// A source repo carrying `config_toml`, plus an empty worktree to bootstrap.
 fn setup(config_toml: &str) -> (Dir, Dir, config::Config) {
     let source = Dir::new();
-    source.write(".herdr/worktree-bootstrap.toml", config_toml);
+    source.write(".worktree-sync.toml", config_toml);
     let worktree = Dir::new();
-    let config = config::load(source.path()).expect("config should load");
+    let config =
+        config::load(source.path(), &config::PluginConfig::default()).expect("config should load");
     (source, worktree, config)
 }
 
@@ -62,6 +63,30 @@ fn phases_run_in_the_documented_order() {
         "SECRET",
         "copy must have run before install detected its marker"
     );
+}
+
+#[test]
+fn symlinks_are_created_before_dependency_installation() {
+    let (source, worktree, config) = setup(
+        r#"
+        [symlink]
+        enabled = true
+        files = ["shared/marker.txt"]
+
+        [install]
+        enabled = true
+
+        [[install.rules]]
+        marker = "shared/marker.txt"
+        command = ["sh", "-c", "echo install >> log.txt"]
+        "#,
+    );
+    source.write("shared/marker.txt", "shared");
+
+    run(worktree.path(), Some(source.path()), &config).expect("bootstrap should succeed");
+
+    assert_eq!(worktree.log_lines("log.txt"), ["install"]);
+    assert_eq!(worktree.read("shared/marker.txt"), "shared");
 }
 
 #[test]
@@ -240,13 +265,20 @@ fn install_runs_once_per_listed_directory() {
     assert_eq!(worktree.log_lines("log.txt"), ["node", "go"]);
 }
 
-/// The copy phase is the only one that needs the source repo, so it's the only
-/// one that can fail for want of it — and it says so.
+/// File operations need the source repo and say so when Herdr omits it.
 #[test]
 fn copy_without_a_source_repo_is_an_error() {
     let (_source, worktree, config) = setup("[copy]\nenabled = true\n");
 
     let err = run(worktree.path(), None, &config).expect_err("copy needs a source repo");
+    assert!(err.to_string().contains("source repo_root"), "got: {err}");
+}
+
+#[test]
+fn symlink_without_a_source_repo_is_an_error() {
+    let (_source, worktree, config) = setup("[symlink]\nenabled = true\nfiles = [\".cache\"]\n");
+
+    let err = run(worktree.path(), None, &config).expect_err("symlink needs a source repo");
     assert!(err.to_string().contains("source repo_root"), "got: {err}");
 }
 

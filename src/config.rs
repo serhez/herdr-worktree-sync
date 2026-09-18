@@ -1,23 +1,78 @@
-//! Per-repo bootstrap config, read from `.herdr/worktree-bootstrap.toml` in the
-//! repo.
+//! User-level plugin settings and per-repo worktree sync configuration.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// Config file candidates, relative to the repo/worktree root, in priority
-/// order. TOML and YAML are both accepted — pick whichever you prefer; the
-/// schema is identical. The first file that exists wins.
-///
-/// The name is qualified with `worktree-` because `.herdr/` is a namespace
-/// shared by every herdr plugin: a bare `bootstrap.toml` is exactly the name a
-/// different plugin would also reach for.
-pub const CONFIG_PATHS: &[&str] = &[
-    ".herdr/worktree-bootstrap.toml",
-    ".herdr/worktree-bootstrap.yaml",
-    ".herdr/worktree-bootstrap.yml",
-];
+/// Config path relative to the repo/worktree root when the user has not
+/// overridden it in the plugin's user-level config.
+pub const DEFAULT_REPO_CONFIG_PATH: &str = ".worktree-sync.toml";
+
+/// User-level settings read from `$HERDR_PLUGIN_CONFIG_DIR/config.toml`.
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PluginConfig {
+    /// Path of the sync file inside every repository.
+    #[serde(default = "default_repo_config_path")]
+    pub repo_config_path: PathBuf,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            repo_config_path: default_repo_config_path(),
+        }
+    }
+}
+
+impl PluginConfig {
+    /// Load user-level settings. A missing file uses the built-in repo config
+    /// path.
+    pub fn load(config_dir: &Path) -> Result<Self> {
+        let path = config_dir.join("config.toml");
+        if !path.is_file() {
+            return Ok(Self::default());
+        }
+
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading plugin config {}", path.display()))?;
+        let config: Self = toml::from_str(&text)
+            .with_context(|| format!("parsing plugin config {}", path.display()))?;
+        validate_repo_config_path(&config.repo_config_path)?;
+        Ok(config)
+    }
+
+    /// Load settings from Herdr's runtime directory when available.
+    pub fn load_from_env() -> Result<Self> {
+        match std::env::var_os("HERDR_PLUGIN_CONFIG_DIR") {
+            Some(dir) => Self::load(Path::new(&dir)),
+            None => Ok(Self::default()),
+        }
+    }
+}
+
+fn default_repo_config_path() -> PathBuf {
+    PathBuf::from(DEFAULT_REPO_CONFIG_PATH)
+}
+
+fn validate_repo_config_path(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        bail!(
+            "repo_config_path must be a relative path inside the repository: {}",
+            path.display()
+        );
+    }
+
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("toml" | "yaml" | "yml") => Ok(()),
+        _ => bail!("repo_config_path must end in .toml, .yaml, or .yml"),
+    }
+}
 
 /// Every config struct denies unknown fields: a typo like `pattern` for
 /// `patterns` would otherwise deserialize to the default and silently do the
@@ -31,8 +86,10 @@ pub struct Config {
     #[serde(default)]
     pub copy: CopyConfig,
     #[serde(default)]
+    pub symlink: SymlinkConfig,
+    #[serde(default)]
     pub install: InstallConfig,
-    /// Commands run before/after the copy + install phases.
+    /// Commands run before/after the file operations and install phases.
     #[serde(default)]
     pub hooks: Hooks,
     /// Whether to announce the result as a herdr toast.
@@ -109,10 +166,10 @@ pub struct GitConfig {
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Hooks {
-    /// Run first, before copy and install.
+    /// Run first, before file operations and install.
     #[serde(default)]
     pub pre: Vec<CommandConfig>,
-    /// Run last, after copy and install.
+    /// Run last, after file operations and install.
     #[serde(default)]
     pub post: Vec<CommandConfig>,
 }
@@ -122,9 +179,9 @@ pub struct Hooks {
 pub struct CopyConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// Explicit relative paths to copy from the source repo. When set,
-    /// gitignored discovery is disabled and exactly these files are copied
-    /// (missing ones are skipped). Omit to use recursive discovery instead.
+    /// Relative paths or glob patterns to copy from the source repo. When set,
+    /// gitignored discovery is disabled; directories are copied recursively
+    /// and missing matches are skipped. Omit to use discovery instead.
     #[serde(default)]
     pub files: Option<Vec<String>>,
     /// Filename globs used by recursive discovery (only when `files` is
@@ -135,6 +192,16 @@ pub struct CopyConfig {
     /// (`.env`, `.env.*`). `*` matches any sequence of characters.
     #[serde(default)]
     pub patterns: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Default, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SymlinkConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Relative paths or glob patterns to link from the primary checkout.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Deserialize, Default, Debug, PartialEq)]
@@ -174,24 +241,20 @@ pub struct CommandConfig {
     pub dir: Option<String>,
 }
 
-/// Load the repo's `.herdr/worktree-bootstrap.{toml,yaml,yml}`. Each repo configures its
-/// own bootstrap. A missing file is not an error — it just means "do nothing".
-/// TOML and YAML are parsed from the same struct, so the format is chosen by
-/// the file extension and nothing else changes.
-pub fn load(repo: &Path) -> Result<Config> {
-    let Some(path) = CONFIG_PATHS
-        .iter()
-        .map(|name| repo.join(name))
-        .find(|path| path.is_file())
-    else {
+/// Load the repo's configured sync file. A missing file is not an error —
+/// it just means "do nothing". TOML and YAML use the same schema.
+pub fn load(repo: &Path, plugin_config: &PluginConfig) -> Result<Config> {
+    let path = repo.join(&plugin_config.repo_config_path);
+    if !path.is_file() {
         println!(
-            "[bootstrap] no .herdr/worktree-bootstrap.{{toml,yaml,yml}} in {}, nothing to do",
+            "[worktree-sync] no config ({}) in {}, nothing to do",
+            plugin_config.repo_config_path.display(),
             repo.display()
         );
         return Ok(Config::default());
-    };
+    }
 
-    println!("[bootstrap] config:   {}", path.display());
+    println!("[worktree-sync] config:   {}", path.display());
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
 
@@ -219,6 +282,7 @@ mod tests {
         // Every phase is opt-in: an empty config must do nothing at all.
         assert!(!config.git.update);
         assert!(!config.copy.enabled);
+        assert!(!config.symlink.enabled);
         assert!(!config.install.enabled);
         assert!(config.hooks.pre.is_empty());
         assert!(config.hooks.post.is_empty());
@@ -297,6 +361,10 @@ mod tests {
             enabled = true
             files = [".env", "apps/web/.env.local"]
 
+            [symlink]
+            enabled = true
+            files = [".pnpm-store", ".next/cache"]
+
             [install]
             enabled = true
             dirs = ["apps/web", "services/api"]
@@ -322,6 +390,10 @@ mod tests {
         assert_eq!(
             config.copy.files.as_deref(),
             Some([".env", "apps/web/.env.local"].map(String::from).as_slice())
+        );
+        assert_eq!(
+            config.symlink.files,
+            [".pnpm-store", ".next/cache"].map(String::from)
         );
         assert_eq!(config.install.rules.len(), 1);
         assert_eq!(config.install.rules[0].marker, "flake.nix");

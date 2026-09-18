@@ -7,7 +7,7 @@
 mod common;
 
 use common::{Dir, init_repo};
-use herdr_worktree_bootstrap::bootstrap;
+use herdr_worktree_sync::bootstrap;
 
 /// A source repo shaped like a small monorepo: committed files in each package
 /// (so git doesn't collapse the package as wholly-ignored) plus gitignored env
@@ -180,4 +180,129 @@ fn explicit_files_are_not_filtered_by_gitignore() {
     bootstrap::copy_files(source.path(), worktree.path(), &files).expect("copy should run");
 
     assert_eq!(worktree.read(".env.example"), "EXAMPLE");
+}
+
+#[test]
+fn explicit_entries_accept_globs() {
+    let source = Dir::new();
+    source.write("config/local.one.toml", "ONE");
+    source.write("config/local.two.toml", "TWO");
+    source.write("config/public.toml", "PUBLIC");
+    let worktree = Dir::new();
+
+    bootstrap::copy_files(
+        source.path(),
+        worktree.path(),
+        &["config/local.*.toml".to_string()],
+    )
+    .expect("glob copy should run");
+
+    assert_eq!(worktree.read("config/local.one.toml"), "ONE");
+    assert_eq!(worktree.read("config/local.two.toml"), "TWO");
+    assert!(!worktree.exists("config/public.toml"));
+}
+
+#[test]
+fn explicit_entries_copy_directories_recursively() {
+    let source = Dir::new();
+    source.write("config/local/app.toml", "APP");
+    source.write("config/local/nested/db.toml", "DB");
+    let worktree = Dir::new();
+
+    bootstrap::copy_files(
+        source.path(),
+        worktree.path(),
+        &["config/local".to_string()],
+    )
+    .expect("directory copy should run");
+
+    assert_eq!(worktree.read("config/local/app.toml"), "APP");
+    assert_eq!(worktree.read("config/local/nested/db.toml"), "DB");
+}
+
+#[test]
+fn explicit_entries_cannot_escape_the_source_repo() {
+    let source = Dir::new();
+    let worktree = Dir::new();
+
+    let err = bootstrap::copy_files(source.path(), worktree.path(), &["../secret".to_string()])
+        .expect_err("parent traversal should be rejected");
+
+    assert!(err.to_string().contains("relative"), "got: {err}");
+}
+
+#[test]
+fn copying_a_directory_never_follows_a_destination_symlink() {
+    let source = Dir::new();
+    source.write("cache/new", "NEW");
+    let outside = Dir::new();
+    outside.write("keep", "KEEP");
+    let worktree = Dir::new();
+    std::os::unix::fs::symlink(outside.path(), worktree.path().join("cache"))
+        .expect("creating destination symlink");
+
+    bootstrap::copy_files(source.path(), worktree.path(), &["cache".to_string()])
+        .expect("directory copy should replace the destination symlink");
+
+    assert!(!worktree.path().join("cache").is_symlink());
+    assert_eq!(worktree.read("cache/new"), "NEW");
+    assert_eq!(outside.read("keep"), "KEEP");
+    assert!(
+        !outside.exists("new"),
+        "copy must not escape through the link"
+    );
+}
+
+#[test]
+fn directory_copy_preserves_source_symlinks() {
+    let source = Dir::new();
+    source.write("shared/data", "DATA");
+    std::os::unix::fs::symlink("data", source.path().join("shared/link"))
+        .expect("creating source symlink");
+    let worktree = Dir::new();
+
+    bootstrap::copy_files(source.path(), worktree.path(), &["shared".to_string()])
+        .expect("directory copy should run");
+
+    assert!(worktree.path().join("shared/link").is_symlink());
+    assert_eq!(worktree.read("shared/link"), "DATA");
+}
+
+#[test]
+fn copying_a_nested_file_never_follows_a_destination_parent_symlink() {
+    let source = Dir::new();
+    source.write("config/cache/new", "NEW");
+    let outside = Dir::new();
+    outside.write("new", "OUTSIDE");
+    let worktree = Dir::new();
+    worktree.write("config/placeholder", "");
+    std::os::unix::fs::symlink(outside.path(), worktree.path().join("config/cache"))
+        .expect("creating destination parent symlink");
+
+    bootstrap::copy_files(
+        source.path(),
+        worktree.path(),
+        &["config/cache/new".to_string()],
+    )
+    .expect("copy should replace the unsafe parent symlink");
+
+    assert!(!worktree.path().join("config/cache").is_symlink());
+    assert_eq!(worktree.read("config/cache/new"), "NEW");
+    assert_eq!(outside.read("new"), "OUTSIDE");
+}
+
+#[test]
+fn copy_entries_cannot_replace_git_worktree_metadata() {
+    let source = Dir::new();
+    source.write(".git/config", "source metadata");
+    let worktree = Dir::new();
+    worktree.write(".git", "gitdir: elsewhere");
+
+    for pattern in [".", ".git", ".git/*"] {
+        let err = bootstrap::copy_files(source.path(), worktree.path(), &[pattern.to_string()])
+            .expect_err("repository metadata must never be copied");
+        assert!(err.to_string().contains("Git metadata"), "got: {err}");
+    }
+
+    assert_eq!(worktree.read(".git"), "gitdir: elsewhere");
 }

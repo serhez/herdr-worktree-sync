@@ -5,8 +5,8 @@ Thanks for taking an interest. Issues and pull requests are both welcome.
 ## Getting set up
 
 ```sh
-git clone git@github.com:piesuke/herdr-worktree-bootstrap.git
-cd herdr-worktree-bootstrap
+git clone git@github.com:serhez/herdr-worktree-sync.git
+cd herdr-worktree-sync
 cargo test
 ```
 
@@ -38,7 +38,7 @@ anywhere — including in `tests/` — fails the build.
 | ---- | ------------- |
 | `src/lib.rs` | `run()` — the phase order and fail-fast behaviour |
 | `src/bootstrap.rs` | copy / install / hook execution, and `BUILTIN_RULES` |
-| `src/config.rs` | the config schema and which file wins |
+| `src/config.rs` | the config schema and configured path loading |
 | `src/event.rs` | `HERDR_PLUGIN_EVENT_JSON` types |
 | `src/main.rs` | a thin wrapper: parse the event, call `run()` |
 
@@ -90,7 +90,7 @@ to parse, and the bootstrap aborts. Pre-1.0 that is acceptable, but it belongs
 in the changelog and in the PR description.
 
 Any schema change also needs both examples updated —
-`examples/worktree-bootstrap.toml` and `examples/worktree-bootstrap.yaml` are
+`examples/worktree-sync.toml` and `examples/worktree-sync.yaml` are
 parsed by the test suite and asserted to be equivalent, so they cannot drift.
 
 Note it in `CHANGELOG.md` under **Unreleased** in the same PR, while you still

@@ -7,7 +7,7 @@
 //! after herdr's own `EventEnvelope`, so a field that herdr marks optional is
 //! pinned here as optional too.
 
-use herdr_worktree_bootstrap::event::Event;
+use herdr_worktree_sync::event::Event;
 
 /// A `worktree.created` payload. `branch` and `workspace.worktree` are passed
 /// as raw JSON fragments so a test can omit either key entirely — which is what

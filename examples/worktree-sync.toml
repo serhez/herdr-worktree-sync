@@ -1,7 +1,7 @@
-# Per-repo worktree bootstrap config.
+# Per-repo worktree sync config.
 #
-# Place this at `.herdr/worktree-bootstrap.toml` in your repository. When the
-# WorktreeBootstrap plugin creates a new worktree of this repo, it runs:
+# Place this at `.worktree-sync.toml` in your repository. When the WorktreeSync
+# plugin creates a new worktree of this repo, it runs:
 #
 #     git update -> pre hooks -> copy -> install -> post hooks
 #
@@ -23,8 +23,15 @@ enabled = true
 # Committed files like `.env.example` are never copied (they aren't gitignored).
 # patterns = [".env", ".env.*"]   # omit for these env defaults; `*` = any chars
 #
-# Or list exact relative paths to copy instead (disables discovery):
+# Or list relative paths, directories, or glob patterns (disables discovery):
 # files = [".env", "apps/web/.env.local"]
+
+# Share selected files or directories with the primary checkout. Entries may
+# be exact relative paths or glob patterns. Existing destinations are replaced
+# when the operation runs, including during a manual sync.
+[symlink]
+enabled = false
+# files = [".pnpm-store", ".next/cache", "config/*.local"]
 
 # Install dependencies. Detection is automatic from lockfiles/manifests and
 # covers the major languages out of the box (node, rust, go, python, ruby, php,
@@ -62,11 +69,11 @@ enabled = true
 # Note: these are NOT run through a shell, so `&&`, pipes, `$VARS`, and
 # redirects don't work — wrap them yourself with ["sh", "-c", "..."].
 
-# pre: before copy and install (e.g. tool setup, private-registry login).
+# pre: before file operations and install (e.g. tool setup, registry login).
 # [[hooks.pre]]
 # command = ["mise", "install"]
 
-# # post: after copy and install (e.g. env setup, codegen, build).
+# # post: after file operations and install (e.g. env setup, codegen, build).
 # [[hooks.post]]
 # command = ["direnv", "allow"]
 

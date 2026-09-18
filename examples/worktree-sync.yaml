@@ -1,11 +1,11 @@
-# Per-repo worktree bootstrap config (YAML edition).
+# Per-repo worktree sync config (YAML edition).
 #
-# Place this at `.herdr/worktree-bootstrap.yaml` (or `.yml`) in your repository.
-# It is the exact same schema as `.herdr/worktree-bootstrap.toml`. Prefer the
-# TOML edition: a leading `*` is alias syntax in YAML, so glob values like an
-# `*.csproj` install marker must be quoted or they fail to parse. If both files
-# exist, the `.toml` wins and this one is ignored. When the WorktreeBootstrap
-# plugin creates a new worktree of this repo, it runs:
+# To use YAML, set `repo_config_path = ".worktree-sync.yaml"` in the plugin's
+# user-level config and place this file at that path in the repository. It uses
+# the same schema as `.worktree-sync.toml`. Prefer TOML when either is fine: a
+# leading `*` is alias syntax in YAML, so glob values like an `*.csproj` install
+# marker must be quoted. When the WorktreeSync plugin creates a new worktree,
+# it runs:
 #
 #     git update -> pre hooks -> copy -> install -> post hooks
 #
@@ -28,8 +28,15 @@ copy:
   # (they aren't gitignored).
   # patterns: [".env", ".env.*"]   # omit for these env defaults; `*` = any chars
   #
-  # Or list exact relative paths to copy instead (disables discovery):
+  # Or list relative paths, directories, or glob patterns (disables discovery):
   # files: [".env", "apps/web/.env.local"]
+
+# Share selected files or directories with the primary checkout. Entries may
+# be exact relative paths or glob patterns. Existing destinations are replaced
+# when the operation runs, including during a manual sync.
+symlink:
+  enabled: false
+  # files: [".pnpm-store", ".next/cache", "config/*.local"]
 
 # Install dependencies. Detection is automatic from lockfiles/manifests and
 # covers the major languages out of the box (node, rust, go, python, ruby, php,
@@ -67,10 +74,10 @@ install:
 # Note: these are NOT run through a shell, so `&&`, pipes, `$VARS`, and
 # redirects don't work — wrap them yourself with ["sh", "-c", "..."].
 # hooks:
-#   # pre: before copy and install (e.g. tool setup, private-registry login).
+#   # pre: before file operations and install (e.g. tool setup, registry login).
 #   pre:
 #     - command: ["mise", "install"]
-#   # post: after copy and install (e.g. env setup, codegen, build).
+#   # post: after file operations and install (e.g. env setup, codegen, build).
 #   post:
 #     - command: ["direnv", "allow"]
 #     - command: ["sh", "-c", "npm run codegen && npm run build"]

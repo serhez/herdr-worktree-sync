@@ -21,7 +21,7 @@ pub const PANE_ENTRYPOINT: &str = "failure";
 /// fixed in the manifest, so this is the only channel for telling it which file
 /// to show — and, like the entrypoint id, a name that matches only by
 /// convention until `tests/manifest.rs` checks it.
-pub const REPORT_PATH_VAR: &str = "WORKTREE_BOOTSTRAP_REPORT";
+pub const REPORT_PATH_VAR: &str = "WORKTREE_SYNC_REPORT";
 
 /// Write the report and open a pane on it.
 ///
@@ -46,7 +46,7 @@ pub fn show_failure(branch: &str, worktree: &Path, err: &anyhow::Error) {
 /// writable state directory in the loop.
 fn compose(branch: &str, worktree: &Path, err: &anyhow::Error) -> String {
     let mut body = format!(
-        "Bootstrap failed\n\nbranch:   {branch}\nworktree: {}\n\n",
+        "Worktree sync failed\n\nbranch:   {branch}\nworktree: {}\n\n",
         worktree.display()
     );
     // One cause per line rather than anyhow's `{:#}`, which joins them with
@@ -216,9 +216,9 @@ mod tests {
         let reply = br#"{"id":"cli:plugin","result":{"plugin_pane":{
             "entrypoint":"failure",
             "pane":{"agent_status":"unknown","cwd":"/repo","focused":true,
-                    "label":"Bootstrap failure","pane_id":"w3T:pG",
+                    "label":"Worktree sync failure","pane_id":"w3T:pG",
                     "terminal_id":"term_65b9","workspace_id":"w3T"},
-            "plugin_id":"piesuke.herdr.worktree.bootstrap"},
+            "plugin_id":"serhez.herdr.worktree.sync"},
             "type":"plugin_pane_opened"}}"#;
 
         let response: OpenResponse =

@@ -1,19 +1,21 @@
 [package]
-name = "herdr-worktree-bootstrap"
-version = "0.1.0"
+name = "herdr-worktree-sync"
+version = "0.2.0"
 edition = "2024"
 # herdr builds this plugin from source on the user's machine, so the toolchain
 # floor is the user's problem the moment it is wrong. Declaring it turns a
 # edition-2024 parse error deep in the build into cargo saying which version it
 # needs.
 rust-version = "1.85"
-description = "Bootstrap a new worktree: copy gitignored files, install deps, run hooks"
+description = "Sync worktree files, install dependencies, and run hooks"
 license = "MIT"
-repository = "https://github.com/piesuke/herdr-worktree-bootstrap"
+repository = "https://github.com/serhez/herdr-worktree-sync"
 readme = "README.md"
 
 [dependencies]
 anyhow = "1"
+glob = "0.3"
+pathdiff = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
@@ -23,8 +25,8 @@ toml = "1.1"
 tempfile = "3"
 
 # The library target is auto-discovered from src/lib.rs as
-# `herdr_worktree_bootstrap`; the binary below is a thin wrapper over it so the
-# bootstrap lifecycle stays testable from `tests/`.
+# `herdr_worktree_sync`; the binary below is a thin wrapper over it so the
+# worktree lifecycle stays testable from `tests/`.
 [[bin]]
-name = "herdr-worktree-init"
+name = "herdr-worktree-sync"
 path = "src/main.rs"

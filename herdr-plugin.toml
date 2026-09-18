@@ -1,8 +1,8 @@
-id = "piesuke.herdr.worktree.bootstrap"
-name = "WorktreeBootstrap"
-version = "0.1.0"
+id = "serhez.herdr.worktree.sync"
+name = "WorktreeSync"
+version = "0.2.0"
 min_herdr_version = "0.7.1"
-description = "Bootstrap a new worktree: copy gitignored files, install deps, run hooks"
+description = "Sync worktree files, install dependencies, and run hooks"
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -11,15 +11,22 @@ command = ["cargo", "fetch"]
 [[build]]
 command = ["cargo", "build", "--release"]
 
-# On worktree.created, run the bootstrap binary. It reads per-repo settings
-# (copy / install / hooks) from `.herdr/worktree-bootstrap.toml` inside each repo
-# — see examples/worktree-bootstrap.toml for the schema.
+# On worktree.created, run the sync binary. It reads per-repo settings
+# (copy / symlink / install / hooks) from the configured file inside each repo
+# — see examples/worktree-sync.toml for the schema.
 [[events]]
 on = "worktree.created"
-command = ["./target/release/herdr-worktree-init"]
+command = ["./target/release/herdr-worktree-sync"]
 
-# Opened by the plugin when a bootstrap fails, on a report file whose path
-# arrives in $WORKTREE_BOOTSTRAP_REPORT. A toast — and herdr's own dialog —
+[[actions]]
+id = "sync"
+title = "Sync worktree files"
+description = "Re-apply configured copy and symlink operations to the focused worktree"
+contexts = ["workspace"]
+command = ["./target/release/herdr-worktree-sync"]
+
+# Opened by the plugin when a worktree setup fails, on a report file whose path
+# arrives in $WORKTREE_SYNC_REPORT. A toast — and herdr's own dialog —
 # truncates the line that says why it failed; a pane is a real terminal that
 # doesn't.
 #
@@ -27,10 +34,10 @@ command = ["./target/release/herdr-worktree-init"]
 # machine without it, where a pane that closed instantly would read as a crash.
 [[panes]]
 id = "failure"
-title = "Bootstrap failure"
+title = "Worktree sync failure"
 placement = "overlay"
 command = [
   "sh",
   "-c",
-  'less -R -- "$WORKTREE_BOOTSTRAP_REPORT" || { cat -- "$WORKTREE_BOOTSTRAP_REPORT"; printf "\npress enter to close "; read _; }',
+  'less -R -- "$WORKTREE_SYNC_REPORT" || { cat -- "$WORKTREE_SYNC_REPORT"; printf "\npress enter to close "; read _; }',
 ]

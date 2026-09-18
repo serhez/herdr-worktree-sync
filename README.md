@@ -1,10 +1,10 @@
 <div align="center">
 
-# Herdr Plugin For worktree created
+# Worktree Sync for Herdr
 
-**Copy the gitignored files, install the dependencies, run the hooks — the moment a worktree is born.**
+**Copy or symlink local files, install dependencies, and run hooks when a worktree is born.**
 
-[![CI](https://github.com/piesuke/herdr-worktree-bootstrap/actions/workflows/ci.yml/badge.svg)](https://github.com/piesuke/herdr-worktree-bootstrap/actions/workflows/ci.yml)
+[![CI](https://github.com/serhez/herdr-worktree-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/serhez/herdr-worktree-sync/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![herdr 0.7.1+](https://img.shields.io/badge/herdr-0.7.1%2B-2b7489)
 ![platforms: linux | macos](https://img.shields.io/badge/platforms-linux%20%7C%20macos-lightgrey)
@@ -12,16 +12,22 @@
 
 </div>
 
-A [Herdr](https://github.com/herdrdev/herdr) plugin that bootstraps a freshly created git
-worktree: it copies gitignored files (like `.env`), installs dependencies, and
-runs your own pre/post commands — automatically, on `worktree.created`.
+A [Herdr](https://github.com/herdrdev/herdr) plugin that prepares freshly
+created git worktrees: it copies gitignored files (like `.env`), symlinks shared
+files or directories, installs dependencies, and runs your own pre/post commands
+automatically on `worktree.created`. Its `sync` action can re-apply the copy and
+symlink operations later.
 
-**Each repository configures its own bootstrap**
-via a committed `.herdr/worktree-bootstrap.toml`, so different projects can copy
-different files, install with different tools, and run different hooks.
+This project is a fork of
+[piesuke/herdr-worktree-bootstrap](https://github.com/piesuke/herdr-worktree-bootstrap).
+It retains the original project's MIT license and copyright notice.
+
+**Each repository configures its own worktree setup** via a committed
+`.worktree-sync.toml`, so different projects can copy different files, install
+with different tools, and run different hooks.
 
 ```toml
-# .herdr/worktree-bootstrap.toml — commit this to any repo you want bootstrapped
+# .worktree-sync.toml — commit this to any repo you want synchronized
 [copy]
 enabled = true          # bring .env and friends into the new worktree
 
@@ -37,21 +43,25 @@ command = ["direnv", "allow"]
 - **Copies what a fresh checkout is missing** — env files and other gitignored
   paths, found recursively via git itself, so nested `.gitignore`s and negations
   just work. Monorepo-safe.
+- **Copies or links explicit paths** — exact paths, directories, and glob
+  patterns can be copied or symlinked from the primary checkout.
+- **Re-applies file operations** — the `sync` plugin action repairs copied files
+  and links in the focused worktree without rerunning setup commands.
 - **Detects the package manager** — 37 built-in markers, from `bun.lockb` to
   `shard.yml`, with per-repo rules that override them.
 - **Runs your own commands** — `pre`/`post` hooks, each optionally scoped to one
   package of a monorepo.
 - **Configured per repository** — TOML or YAML, committed alongside the code, so
-  every clone and every teammate gets the same bootstrap.
+  every clone and every teammate gets the same setup.
 - **Loud about typos** — unknown config keys are an error, not a silent default.
 - **Fail-fast** — the first non-zero exit aborts the run, instead of leaving you
   to discover it later.
 - **Tells you what it did** — a herdr toast when the worktree is ready, or when
-  the bootstrap aborted and why, with the failing command's own output quoted.
+  the setup aborted and why, with the failing command's own output quoted.
 - **Shows you the whole error** — a failure also opens a scrollable pane with
   the full report, because a toast is too small for a package manager's answer.
 - **Optionally cleans up after itself** — `[failure] action = "remove"` takes a
-  worktree that failed to bootstrap back out again.
+  worktree whose setup failed back out again.
 
 ## Table of contents
 
@@ -71,21 +81,22 @@ Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ```
 Herdr (worktree.created)
-  └─ ./target/release/herdr-worktree-init
+  └─ ./target/release/herdr-worktree-sync
        │  reads HERDR_PLUGIN_EVENT_JSON (worktree path, branch, source repo_root)
-       │  loads <repo>/.herdr/worktree-bootstrap.toml
+       │  loads the configured per-repo TOML or YAML file
        │
        ├─ git update     bring git up to date (e.g. fetch) — optional
-       ├─ pre hooks      commands run before copy/install
-       ├─ copy           <repo>/<file>  ->  <worktree>/<file>
+       ├─ pre hooks      commands run before file operations/install
+       ├─ copy           <repo>/<path>  ->  <worktree>/<path>
+       ├─ symlink        <repo>/<path>  ->  <worktree>/<path>
        ├─ install        detect package manager from lockfiles, install
-       ├─ post hooks     commands run after copy + install
+       ├─ post hooks     commands run after file operations + install
        ├─ notify         herdr toast: what ran, or what failed
        └─ on failure     full report in a pane, and optionally a rollback
 ```
 
-Lifecycle order: **git update → pre → copy → install → post**. Any non-zero
-exit aborts the whole bootstrap (fail-fast). If a repo has no config file, the
+Lifecycle order: **git update → pre → copy → symlink → install → post**. Any non-zero
+exit aborts the whole setup (fail-fast). If a repo has no config file, the
 plugin does nothing. Whatever the outcome, the run ends with a toast — see
 [`[notify]`](#notify--announce-the-result) for the herdr setting it needs — and
 a failure additionally opens the
@@ -93,31 +104,40 @@ a failure additionally opens the
 
 ### Config format: TOML or YAML
 
-The config can be written as **either TOML or YAML** — same schema, pick
-whichever you prefer. The plugin looks for these files in order and uses the
-first that exists:
+The config can be written as TOML or YAML with the same schema. By default, the
+plugin checks one path:
 
 ```
-.herdr/worktree-bootstrap.toml   (checked first)
-.herdr/worktree-bootstrap.yaml
-.herdr/worktree-bootstrap.yml
+.worktree-sync.toml
 ```
 
 The reference below shows TOML. See
-[`examples/worktree-bootstrap.yaml`](examples/worktree-bootstrap.yaml) for the
+[`examples/worktree-sync.yaml`](examples/worktree-sync.yaml) for the
 identical config in YAML.
 
 **Prefer TOML**, including in non-Rust repos. The schemas are identical, but
 several fields in this one take values starting with `*` (`patterns`, and
 `*.ext` install markers), and in YAML a leading `*` is alias syntax — an
 unquoted `marker: *.csproj` is a parse error. TOML also reports unknown-key
-errors with the offending line. Never commit both files: `.toml` wins and the
-other is silently ignored.
+errors with the offending line. To use YAML, configure its path explicitly.
 
 **Unknown keys are an error.** A typo like `pattern` instead of `patterns`
-aborts the bootstrap with a message naming the offending key and the valid ones,
+aborts the setup with a message naming the offending key and the valid ones,
 rather than silently falling back to the default — a config that looks right but
 does nothing is the most expensive failure mode here.
+
+### Custom repo config path
+
+The default can be replaced with one repository-relative path in the plugin's
+user config:
+
+```toml
+# $(herdr plugin config-dir serhez.herdr.worktree.sync)/config.toml
+repo_config_path = "config/worktree.yaml"
+```
+
+The path must stay inside the repository and end in `.toml`, `.yaml`, or
+`.yml`. Only the configured path is checked.
 
 ## Installing the plugin
 
@@ -128,24 +148,24 @@ the `[[build]]` steps in the manifest. Linux and macOS only.
 ### Install from GitHub
 
 ```sh
-herdr plugin install piesuke/herdr-worktree-bootstrap
+herdr plugin install serhez/herdr-worktree-sync
 ```
 
 ### Or link a local checkout (for development)
 
 ```sh
-git clone git@github.com:piesuke/herdr-worktree-bootstrap.git
-herdr plugin link ./herdr-worktree-bootstrap        # add --disabled to link without enabling
+git clone git@github.com:serhez/herdr-worktree-sync.git
+herdr plugin link ./herdr-worktree-sync        # add --disabled to link without enabling
 ```
 
 Either way herdr registers the plugin under the id
-**`piesuke.herdr.worktree.bootstrap`** and records it in
+**`serhez.herdr.worktree.sync`** and records it in
 `~/.config/herdr/plugins.json`.
 
 ### Build the binary
 
 The manifest declares the build steps (`cargo fetch`, then
-`cargo build --release`), which produce `./target/release/herdr-worktree-init`
+`cargo build --release`), which produce `./target/release/herdr-worktree-sync`
 — the binary `[[events]]` invokes. If that file doesn't exist after installing,
 run the build yourself from the plugin root:
 
@@ -170,8 +190,8 @@ worktree, for every repo. What it *does* is decided per repository.
 
 ### 1. Add a config to a repo
 
-Nothing happens until a repo has one. Commit `.herdr/worktree-bootstrap.toml` to each
-repo you want bootstrapped:
+Nothing happens until a repo has one. Commit `.worktree-sync.toml` to each repo
+you want synchronized:
 
 ```toml
 [copy]
@@ -185,7 +205,7 @@ enabled = true
 command = ["direnv", "allow"]
 ```
 
-See [`examples/worktree-bootstrap.toml`](examples/worktree-bootstrap.toml) for the full schema and
+See [`examples/worktree-sync.toml`](examples/worktree-sync.toml) for the full schema and
 the [configuration reference](#configuration-reference) below for each section.
 
 ### 2. Create a worktree
@@ -193,9 +213,13 @@ the [configuration reference](#configuration-reference) below for each section.
 Create a worktree of that repo in herdr as usual. The plugin fires on
 `worktree.created` and runs the phases in order.
 
-> There is currently **no way to trigger a run manually** — creating a worktree
-> is the only entry point. Iterating on a config means creating (and deleting) a
-> throwaway worktree.
+The full bootstrap runs only when a worktree is created. File operations can be
+re-applied later to the focused linked worktree without rerunning hooks or
+dependency installation:
+
+```sh
+herdr plugin action invoke serhez.herdr.worktree.sync.sync
+```
 
 ### 3. Read the logs
 
@@ -203,7 +227,7 @@ The plugin's stdout is captured by herdr, not printed to your terminal. To see
 what a run did:
 
 ```sh
-herdr plugin log list --plugin piesuke.herdr.worktree.bootstrap --limit 5
+herdr plugin log list --plugin serhez.herdr.worktree.sync --limit 5
 ```
 
 Each entry carries the `exit_code`, `status`, and full `stdout`/`stderr`. Useful
@@ -211,7 +235,7 @@ things you'll see there:
 
 | Output | Meaning |
 | ------ | ------- |
-| `no .herdr/worktree-bootstrap.{toml,yaml,yml} in <repo>, nothing to do` | The repo has no config — step 1 was skipped |
+| `[worktree-sync] no config (...) in <repo>, nothing to do` | The configured path is absent — step 1 was skipped |
 | `[copy] no gitignored files matched [...]` | Discovery ran but found nothing — check the files are actually gitignored |
 | `[install] no matching install rule in <dir>, skipping` | No known marker file in that directory |
 | `unknown field ...` | A typo in the config; the bootstrap aborted |
@@ -219,16 +243,16 @@ things you'll see there:
 ### Managing the plugin
 
 ```sh
-herdr plugin disable piesuke.herdr.worktree.bootstrap   # stop it firing, keep it registered
-herdr plugin enable  piesuke.herdr.worktree.bootstrap
-herdr plugin unlink  piesuke.herdr.worktree.bootstrap   # remove a linked local checkout
-herdr plugin uninstall piesuke.herdr.worktree.bootstrap # remove an installed copy
+herdr plugin disable serhez.herdr.worktree.sync   # stop it firing, keep it registered
+herdr plugin enable  serhez.herdr.worktree.sync
+herdr plugin unlink  serhez.herdr.worktree.sync   # remove a linked local checkout
+herdr plugin uninstall serhez.herdr.worktree.sync # remove an installed copy
 ```
 
 ## Configuration reference
 
-The config file lives at `.herdr/worktree-bootstrap.toml` (or `.yaml`/`.yml`) in each
-repository.
+By default, the config lives at `.worktree-sync.toml` in each repository.
+`repo_config_path` can replace it with a custom TOML or YAML path.
 
 ### `[git]` — update git first
 
@@ -269,14 +293,37 @@ This is the right model for monorepos, where env files live in subdirectories
   gitignored, and the fresh checkout already has them. Wholly-ignored
   directories (e.g. `node_modules/`) are skipped, not walked into.
 
-**Explicit mode.** Set `files` to a list of relative paths to copy exactly those
-instead (missing ones are skipped, not errors); discovery is then disabled:
+**Explicit mode.** Set `files` to relative paths or glob patterns. Files are
+copied, directories are copied recursively, and missing matches are skipped;
+discovery is then disabled:
 
 ```toml
 [copy]
 enabled = true
-files = [".env", "apps/web/.env.local"]
+files = [".env", "config/*.local.toml", "fixtures"]
 ```
+
+Existing destinations are replaced. When a directory is copied, unrelated
+files already present in its destination are retained while matching entries
+are updated. Source symlinks are preserved rather than followed. Repository
+root and `.git` matches are rejected to protect worktree metadata.
+
+### `[symlink]` — share files and directories with the primary checkout
+
+Creates relative symlinks at the same paths in the linked worktree. Entries
+accept the same exact relative paths and glob patterns as explicit copy mode:
+
+```toml
+[symlink]
+enabled = true
+files = [".pnpm-store", ".next/cache", "config/*.local"]
+```
+
+Files reached through these links are shared: changing one from any worktree
+changes the primary checkout's copy. Existing destinations are replaced when
+the phase runs, which lets the manual `sync` action repair stale links. Parent
+traversal and absolute paths are rejected.
+Repository root and `.git` matches are rejected as well.
 
 ### `[install]` — install dependencies
 
@@ -362,7 +409,7 @@ command = ["nix", "develop", "--command", "true"]
 
 ### `[[hooks.pre]]` / `[[hooks.post]]` — arbitrary commands
 
-Commands run inside the new worktree, in order. `pre` runs before copy/install;
+Commands run inside the new worktree, in order. `pre` runs before file operations/install;
 `post` runs after. Add `dir` to run a hook in one package of a monorepo instead
 of at the root:
 
@@ -399,7 +446,7 @@ notification a run is invisible unless you go and read
 herdr toast summarising it:
 
 ```
-Bootstrap done · worktree/green-harbor-ad23
+Worktree sync done · worktree/green-harbor-ad23
   updated git
   copied 3 files
   pnpm install --frozen-lockfile
@@ -407,7 +454,7 @@ Bootstrap done · worktree/green-harbor-ad23
 ```
 
 ```
-Bootstrap failed · worktree/green-harbor-ad23
+Worktree sync failed · worktree/green-harbor-ad23
   `pnpm install --frozen-lockfile` exited with exit status: 1
   …
   ERR_PNPM_ENOENT  Failed to create bin at …/node_modules/.bin/next:
@@ -461,7 +508,7 @@ complete error chain including the failing command's output — and opens it in 
 herdr pane:
 
 ```
-Bootstrap failed
+Worktree sync failed
 
 branch:   worktree/green-harbor-ad23
 worktree: /Users/you/.herdr/worktrees/app/worktree-green-harbor-ad23
@@ -476,7 +523,7 @@ press `q` to close it. The file stays behind either way, and its path is in
 [the logs](#3-read-the-logs):
 
 ```
-[report] full failure report: ~/.local/state/herdr/plugins/piesuke.herdr.worktree.bootstrap/failure-worktree-green-harbor-ad23.log
+[report] full failure report: ~/.local/state/herdr/plugins/serhez.herdr.worktree.sync/failure-worktree-green-harbor-ad23.log
 ```
 
 The worktree itself is **kept** by default:
@@ -505,14 +552,15 @@ via a non-forcing `git branch -d` that refuses if you committed something).
 ├── Cargo.toml
 ├── herdr-plugin.toml        # plugin manifest (generic, no per-repo settings)
 ├── examples/
-│   ├── worktree-bootstrap.toml   # sample config for consumers to copy
-│   └── worktree-bootstrap.yaml   # the same config in YAML
+│   ├── worktree-sync.toml   # sample config for consumers to copy
+│   └── worktree-sync.yaml   # the same config in YAML
 ├── src/
+│   ├── action.rs            # manual file synchronization
 │   ├── main.rs              # binary: parse the event, then hand off to run()
 │   ├── lib.rs               # run(): the bootstrap lifecycle
 │   ├── event.rs             # HERDR_PLUGIN_EVENT_JSON types
-│   ├── config.rs            # .herdr/worktree-bootstrap.toml types + loading
-│   ├── bootstrap.rs         # copy / install / hook execution
+│   ├── config.rs            # plugin settings and per-repo config loading
+│   ├── bootstrap.rs         # copy / symlink / install / hook execution
 │   ├── herdr.rs             # which herdr binary the plugin calls back into
 │   ├── notify.rs            # the end-of-run herdr toast
 │   ├── report.rs            # the full failure report and the pane showing it
@@ -520,7 +568,9 @@ via a non-forcing `git branch -d` that refuses if you committed something).
 └── tests/
     ├── common/mod.rs        # temp dirs and throwaway git repos
     ├── config_load.rs       # which config file wins; the examples still parse
-    ├── copy.rs              # discovery against real git repositories
+    ├── copy.rs              # discovery and explicit copying
+    ├── symlink.rs           # declarative shared paths
+    ├── sync.rs              # manual action context and behavior
     ├── lifecycle.rs         # phase order and fail-fast
     └── manifest.rs          # Cargo.toml and herdr-plugin.toml agree
 ```
@@ -534,8 +584,8 @@ next time herdr fires the event.
 
 The crate is a library plus a thin binary. Everything that decides *what
 happens* lives in the library, so the lifecycle can be tested without herdr in
-the loop; `main.rs` only reads `HERDR_PLUGIN_EVENT_JSON`, loads the repo's
-config, and calls `run()`.
+the loop; `main.rs` selects the creation event or manual action, loads the
+repo's config, and calls the corresponding library entrypoint.
 
 ## Development
 
@@ -572,9 +622,9 @@ Two things worth knowing before you open a PR:
 
 ## Security note
 
-Because hooks and install commands come from the repo's committed
-`.herdr/worktree-bootstrap.toml`, **anyone who can push to a repo can run arbitrary
-commands** when a worktree of it is created — the same trust model as
+Because hooks and install commands come from the repo's bootstrap config,
+**anyone who can push to a repo can run arbitrary commands** when a worktree of
+it is created — the same trust model as
 `.git/hooks` or CI config. Only enable automatic bootstrap for repositories you
 trust.
 
@@ -583,4 +633,4 @@ vulnerability.
 
 ## License
 
-[MIT](LICENSE) © piesuke
+[MIT](LICENSE) © piesuke. Fork maintained by serhez.

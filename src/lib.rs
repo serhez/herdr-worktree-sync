@@ -1,10 +1,11 @@
 //! Bootstrap a freshly created git worktree: copy gitignored files, install
 //! dependencies, and run per-repo hooks.
 //!
-//! The binary (`herdr-worktree-init`) is a thin wrapper that parses the herdr
+//! The binary (`herdr-worktree-sync`) is a thin wrapper that parses the herdr
 //! event payload and calls [`run`]. Everything that decides *what happens* lives
 //! here so it can be exercised from tests without herdr in the loop.
 
+pub mod action;
 pub mod bootstrap;
 pub mod config;
 pub mod event;
@@ -21,7 +22,7 @@ use crate::config::Config;
 
 /// What a [`run`] actually did, for the end-of-run notification.
 ///
-/// The two copy/install fields are `Option` so that "the phase was disabled"
+/// The copy, symlink, and install fields are `Option` so that "the phase was disabled"
 /// stays distinguishable from "the phase ran and found nothing". Only the
 /// second is worth reporting, and it is the harder of the two to diagnose
 /// from the outside — it looks identical to a phase that never ran.
@@ -30,6 +31,8 @@ pub struct Summary {
     pub git_updated: bool,
     /// Files copied, when the copy phase ran.
     pub copied: Option<usize>,
+    /// Paths linked, when the symlink phase ran.
+    pub linked: Option<usize>,
     /// The command run in each install directory, when the install phase ran.
     pub installed: Option<Vec<String>>,
     /// Pre and post hooks together.
@@ -52,8 +55,8 @@ impl Summary {
 /// [`config::OnFailure`].
 ///
 /// `source` is the repo the worktree was derived from. It is only needed by the
-/// copy phase, which reads the gitignored files a fresh checkout won't have; the
-/// other phases operate entirely inside `worktree`.
+/// copy and symlink phases; the other phases operate entirely inside
+/// `worktree`.
 pub fn run(worktree: &Path, source: Option<&Path>, config: &Config) -> Result<Summary> {
     let mut summary = Summary::default();
 
@@ -65,13 +68,9 @@ pub fn run(worktree: &Path, source: Option<&Path>, config: &Config) -> Result<Su
 
     summary.hooks_run += bootstrap::run_hooks(worktree, &config.hooks.pre)?;
 
-    if config.copy.enabled {
-        let src = source.context("copy is enabled but the event has no source repo_root")?;
-        summary.copied = Some(match config.copy.files.as_deref() {
-            Some(files) => bootstrap::copy_files(src, worktree, files)?,
-            None => bootstrap::copy_gitignored(src, worktree, config.copy.patterns.as_deref())?,
-        });
-    }
+    let file_summary = sync_files(worktree, source, config)?;
+    summary.copied = file_summary.copied;
+    summary.linked = file_summary.linked;
 
     if config.install.enabled {
         summary.installed = Some(bootstrap::install_deps(
@@ -81,8 +80,35 @@ pub fn run(worktree: &Path, source: Option<&Path>, config: &Config) -> Result<Su
         )?);
     }
 
-    // Post hooks: run last, after copy and install.
+    // Post hooks: run last, after file operations and install.
     summary.hooks_run += bootstrap::run_hooks(worktree, &config.hooks.post)?;
 
+    Ok(summary)
+}
+
+/// Apply only the declared copy and symlink operations. This is shared by the
+/// creation lifecycle and the manual `sync` plugin action.
+pub fn sync_files(worktree: &Path, source: Option<&Path>, config: &Config) -> Result<Summary> {
+    let mut summary = Summary::default();
+    if config.copy.enabled || config.symlink.enabled {
+        let src = source.context("file operations are enabled but there is no source repo_root")?;
+        if src == worktree {
+            anyhow::bail!("file operations require a linked worktree, not the primary checkout");
+        }
+
+        if config.copy.enabled {
+            summary.copied = Some(match config.copy.files.as_deref() {
+                Some(files) => bootstrap::copy_files(src, worktree, files)?,
+                None => bootstrap::copy_gitignored(src, worktree, config.copy.patterns.as_deref())?,
+            });
+        }
+        if config.symlink.enabled {
+            summary.linked = Some(bootstrap::symlink_files(
+                src,
+                worktree,
+                &config.symlink.files,
+            )?);
+        }
+    }
     Ok(summary)
 }

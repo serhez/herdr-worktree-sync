@@ -38,12 +38,12 @@ pub fn toast_for(when: NotifyWhen, branch: &str, outcome: Outcome<'_>) -> Option
         // at all, which would otherwise toast on every single worktree.
         (_, Outcome::Succeeded(summary)) if summary.is_empty() => None,
         (_, Outcome::Succeeded(summary)) => Some(Toast {
-            title: format!("Bootstrap done · {branch}"),
+            title: format!("Worktree sync done · {branch}"),
             body: describe(summary),
             sound: "done",
         }),
         (_, Outcome::Failed(err)) => Some(Toast {
-            title: format!("Bootstrap failed · {branch}"),
+            title: format!("Worktree sync failed · {branch}"),
             // `{:#}` flattens anyhow's context chain onto one line, so the
             // toast carries the failing command and not just the outermost
             // "bootstrap failed".
@@ -87,6 +87,12 @@ fn describe(summary: &Summary) -> String {
         Some(0) => lines.push("copied no files".to_string()),
         Some(1) => lines.push("copied 1 file".to_string()),
         Some(n) => lines.push(format!("copied {n} files")),
+    }
+    match summary.linked {
+        None => {}
+        Some(0) => lines.push("linked no paths".to_string()),
+        Some(1) => lines.push("linked 1 path".to_string()),
+        Some(n) => lines.push(format!("linked {n} paths")),
     }
     match summary.installed.as_deref() {
         None => {}
@@ -166,6 +172,7 @@ mod tests {
         Summary {
             git_updated: true,
             copied: Some(3),
+            linked: Some(2),
             installed: Some(vec!["pnpm install".to_string(), "uv sync".to_string()]),
             hooks_run: 2,
         }
@@ -186,10 +193,10 @@ mod tests {
         )
         .expect("a run that did work should toast");
 
-        assert_eq!(toast.title, "Bootstrap done · worktree/silver-stone");
+        assert_eq!(toast.title, "Worktree sync done · worktree/silver-stone");
         assert_eq!(
             toast.body,
-            "updated git\ncopied 3 files\npnpm install\nuv sync\nran 2 hooks"
+            "updated git\ncopied 3 files\nlinked 2 paths\npnpm install\nuv sync\nran 2 hooks"
         );
         assert_eq!(toast.sound, "done");
     }
@@ -201,7 +208,7 @@ mod tests {
         let toast = toast_for(NotifyWhen::Always, "wt/x", Outcome::Failed(&err))
             .expect("failures always toast");
 
-        assert_eq!(toast.title, "Bootstrap failed · wt/x");
+        assert_eq!(toast.title, "Worktree sync failed · wt/x");
         assert!(toast.body.contains("pnpm install"), "got: {}", toast.body);
         assert!(toast.body.contains("install phase"), "got: {}", toast.body);
         assert_eq!(toast.sound, "request");

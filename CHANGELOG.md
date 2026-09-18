@@ -6,9 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Because the config schema uses `deny_unknown_fields`, **removing or renaming a
-config key is breaking** — an existing repo's committed
-`.herdr/worktree-bootstrap.toml` stops parsing and the bootstrap aborts. Such
+config key is breaking** — an existing repo's committed `.worktree-sync.toml`
+stops parsing and the worktree setup aborts. Such
 changes are called out under **Changed** or **Removed**, never **Added**.
+
+## [Unreleased]
+
+### Added
+
+- `[symlink]` file operations for exact paths, directories, and glob patterns.
+- Glob and recursive-directory support for explicit `[copy].files` entries.
+- A `sync` plugin action that reapplies copy and symlink operations to the
+  focused linked worktree without rerunning hooks or dependency installation.
+- User-level `repo_config_path` setting for replacing the default per-repo
+  config path with a custom relative TOML or YAML path. The default is
+  `.worktree-sync.toml`.
+- Renamed the fork to Worktree Sync and its plugin ID to
+  `serhez.herdr.worktree.sync`.
 
 ## [0.1.0] - 2026-09-16
 
@@ -63,5 +77,5 @@ changes are called out under **Changed** or **Removed**, never **Added**.
   behaviour change — the schema, the error messages, and unknown-key rejection
   are identical.
 
-[Unreleased]: https://github.com/piesuke/herdr-worktree-bootstrap/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/serhez/herdr-worktree-sync/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/piesuke/herdr-worktree-bootstrap/releases/tag/v0.1.0

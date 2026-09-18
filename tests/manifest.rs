@@ -21,11 +21,19 @@ struct Plugin {
     #[serde(default)]
     events: Vec<Command>,
     #[serde(default)]
+    actions: Vec<Action>,
+    #[serde(default)]
     panes: Vec<Pane>,
 }
 
 #[derive(Deserialize)]
 struct Command {
+    command: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Action {
+    id: String,
     command: Vec<String>,
 }
 
@@ -100,6 +108,19 @@ fn the_event_invokes_the_binary_cargo_builds() {
     }
 }
 
+#[test]
+fn the_sync_action_invokes_the_binary_cargo_builds() {
+    let plugin = plugin();
+    let expected = format!("./target/release/{}", binary_name());
+    let sync = plugin
+        .actions
+        .iter()
+        .find(|action| action.id == "sync")
+        .expect("the manifest should expose the sync action");
+
+    assert_eq!(sync.command.first(), Some(&expected));
+}
+
 /// The event path points into `target/release`, which only exists if the
 /// manifest actually asks for a release build.
 #[test]
@@ -125,9 +146,9 @@ fn the_failure_pane_entrypoint_exists_in_the_manifest() {
         plugin
             .panes
             .iter()
-            .any(|pane| pane.id == herdr_worktree_bootstrap::report::PANE_ENTRYPOINT),
+            .any(|pane| pane.id == herdr_worktree_sync::report::PANE_ENTRYPOINT),
         "no `[[panes]]` entry with id `{}`",
-        herdr_worktree_bootstrap::report::PANE_ENTRYPOINT
+        herdr_worktree_sync::report::PANE_ENTRYPOINT
     );
 }
 
@@ -136,11 +157,11 @@ fn the_failure_pane_entrypoint_exists_in_the_manifest() {
 /// expands, with nothing but spelling holding the two together.
 #[test]
 fn the_failure_pane_reads_the_env_var_the_plugin_sets() {
-    let var = herdr_worktree_bootstrap::report::REPORT_PATH_VAR;
+    let var = herdr_worktree_sync::report::REPORT_PATH_VAR;
     let pane = plugin()
         .panes
         .into_iter()
-        .find(|pane| pane.id == herdr_worktree_bootstrap::report::PANE_ENTRYPOINT)
+        .find(|pane| pane.id == herdr_worktree_sync::report::PANE_ENTRYPOINT)
         .expect("the failure pane should exist");
 
     assert!(
