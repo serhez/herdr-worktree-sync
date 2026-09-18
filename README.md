@@ -328,6 +328,13 @@ copy mode. Directories are walked and each regular file is cloned separately;
 source symlinks are preserved. Existing destinations are replaced, while
 unrelated files in destination directories are retained.
 
+A cloned directory containing `pyvenv.cfg` is treated as a Python virtual
+environment. After cloning, the plugin rewrites the source checkout's absolute
+path to the worktree path in UTF-8 files throughout the venv. This fixes script
+shebangs, activation scripts, editable-install `.pth` files, and direct-URL
+metadata; binary files and symlinks are left untouched. Without relocation, a
+byte-identical venv can silently run the source checkout's interpreter and code.
+
 This phase is available only on macOS and both paths must be on volumes that
 support `clonefile(2)`, normally APFS. It deliberately fails on Linux,
 non-clone-capable filesystems, or cross-volume operations instead of silently

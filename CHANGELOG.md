@@ -16,6 +16,8 @@ changes are called out under **Changed** or **Removed**, never **Added**.
 
 - `[clone]` APFS copy-on-write operations for exact paths, directories, and
   glob patterns on macOS.
+- Automatic relocation of absolute checkout paths in cloned Python virtual
+  environments, detected by `pyvenv.cfg`.
 - `[symlink]` file operations for exact paths, directories, and glob patterns.
 - Glob and recursive-directory support for explicit `[copy].files` entries.
 - A `sync` plugin action that reapplies copy, clone, and symlink operations to the

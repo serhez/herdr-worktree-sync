@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -131,10 +132,93 @@ pub fn clone_files(source: &Path, worktree: &Path, files: &[String]) -> Result<u
     let mut cloned = 0usize;
     for (src, relative) in entries {
         prepare_destination_parent(worktree, &relative)?;
-        cloned += clone_entry(&src, &worktree.join(&relative))?;
+        let destination = worktree.join(&relative);
+        cloned += clone_entry(&src, &destination)?;
         println!("[clone] {}", relative.display());
+        let relocated = relocate_cloned_venv_if_present(source, worktree, &destination)?;
+        if relocated > 0 {
+            println!(
+                "[clone] relocated {relocated} files in {}",
+                relative.display()
+            );
+        }
     }
     Ok(cloned)
+}
+
+/// Rewrite absolute source-checkout paths embedded in a cloned Python virtual
+/// environment. A cloned directory that is not a venv is left byte-identical.
+fn relocate_cloned_venv_if_present(
+    source_root: &Path,
+    worktree_root: &Path,
+    cloned_path: &Path,
+) -> Result<usize> {
+    let metadata = cloned_path
+        .symlink_metadata()
+        .with_context(|| format!("inspecting cloned path {}", cloned_path.display()))?;
+    if !metadata.is_dir() || !cloned_path.join("pyvenv.cfg").is_file() {
+        return Ok(0);
+    }
+    relocate_venv(source_root, worktree_root, cloned_path)
+}
+
+/// Replace the canonical source repo root with the canonical worktree root in
+/// every UTF-8 regular file below `venv`. Symlinks and non-UTF-8 files are not
+/// followed or modified.
+fn relocate_venv(source_root: &Path, worktree_root: &Path, venv: &Path) -> Result<usize> {
+    let source_root = source_root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing source repo {}", source_root.display()))?;
+    let worktree_root = worktree_root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing worktree {}", worktree_root.display()))?;
+    let source_text = source_root
+        .to_str()
+        .context("canonical source repo path is not valid UTF-8")?;
+    let worktree_text = worktree_root
+        .to_str()
+        .context("canonical worktree path is not valid UTF-8")?;
+
+    relocate_text_files(venv, source_text, worktree_text)
+}
+
+fn relocate_text_files(directory: &Path, source_root: &str, worktree_root: &str) -> Result<usize> {
+    let mut relocated = 0;
+    for entry in
+        fs::read_dir(directory).with_context(|| format!("reading {}", directory.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("reading metadata for {}", path.display()))?;
+
+        if metadata.is_dir() {
+            relocated += relocate_text_files(&path, source_root, worktree_root)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        if !text.contains(source_root) {
+            continue;
+        }
+
+        let rewritten = text.replace(source_root, worktree_root);
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .with_context(|| format!("opening {} for venv relocation", path.display()))?;
+        file.write_all(rewritten.as_bytes())
+            .with_context(|| format!("rewriting {} for cloned venv", path.display()))?;
+        relocated += 1;
+    }
+    Ok(relocated)
 }
 
 #[cfg(target_os = "macos")]
@@ -725,6 +809,7 @@ fn last_lines(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     /// A directory containing each of `files` as an empty file.
@@ -745,6 +830,101 @@ mod tests {
             marker: marker.to_string(),
             command: argv(command),
         }
+    }
+
+    #[test]
+    fn relocating_a_venv_rewrites_text_without_touching_binary_files_or_modes() {
+        let source = tempfile::tempdir().expect("creating source repo");
+        let worktree = tempfile::tempdir().expect("creating worktree");
+        let source_root = source.path().canonicalize().expect("canonicalizing source");
+        let worktree_root = worktree
+            .path()
+            .canonicalize()
+            .expect("canonicalizing worktree");
+        let venv = worktree_root.join(".venv");
+        fs::create_dir_all(venv.join("bin")).expect("creating bin");
+        fs::create_dir_all(venv.join("lib/python3.12/site-packages"))
+            .expect("creating site-packages");
+        fs::write(venv.join("pyvenv.cfg"), "home = /opt/homebrew/bin\n")
+            .expect("writing pyvenv.cfg");
+
+        let tool = venv.join("bin/tool");
+        fs::write(
+            &tool,
+            format!(
+                "#!{}/.venv/bin/python3\nrepo={}\n",
+                source_root.display(),
+                source_root.display()
+            ),
+        )
+        .expect("writing tool");
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o751))
+            .expect("setting executable mode");
+        fs::write(
+            venv.join("bin/activate"),
+            format!("VIRTUAL_ENV='{}/.venv'\n", source_root.display()),
+        )
+        .expect("writing activation script");
+        fs::write(
+            venv.join("lib/python3.12/site-packages/x.pth"),
+            format!("{}/src\n", source_root.display()),
+        )
+        .expect("writing editable install path");
+
+        let mut binary = vec![0xff, 0xfe, 0x00];
+        binary.extend_from_slice(source_root.as_os_str().as_encoded_bytes());
+        let binary_path = venv.join("lib/python3.12/site-packages/native.bin");
+        fs::write(&binary_path, &binary).expect("writing binary fixture");
+
+        let interpreter = venv.join("bin/python");
+        std::os::unix::fs::symlink("/opt/homebrew/bin/python3", &interpreter)
+            .expect("creating interpreter symlink");
+
+        let relocated =
+            relocate_venv(&source_root, &worktree_root, &venv).expect("relocating cloned venv");
+
+        assert_eq!(relocated, 3);
+        for path in [
+            tool.clone(),
+            venv.join("bin/activate"),
+            venv.join("lib/python3.12/site-packages/x.pth"),
+        ] {
+            let text = fs::read_to_string(path).expect("reading relocated text");
+            assert!(!text.contains(source_root.to_str().unwrap()), "got: {text}");
+            assert!(
+                text.contains(worktree_root.to_str().unwrap()),
+                "got: {text}"
+            );
+        }
+        assert_eq!(fs::read(binary_path).unwrap(), binary);
+        assert_eq!(
+            fs::metadata(tool).unwrap().permissions().mode() & 0o777,
+            0o751
+        );
+        assert_eq!(
+            fs::read_link(interpreter).unwrap(),
+            Path::new("/opt/homebrew/bin/python3")
+        );
+    }
+
+    #[test]
+    fn a_cloned_directory_without_pyvenv_cfg_is_not_rewritten() {
+        let source = tempfile::tempdir().expect("creating source repo");
+        let worktree = tempfile::tempdir().expect("creating worktree");
+        let cloned_dir = worktree.path().join("cache");
+        fs::create_dir(&cloned_dir).expect("creating cloned directory");
+        let original = format!("{} must stay unchanged\n", source.path().display());
+        fs::write(cloned_dir.join("metadata.txt"), &original).expect("writing metadata");
+
+        let relocated =
+            relocate_cloned_venv_if_present(source.path(), worktree.path(), &cloned_dir)
+                .expect("checking cloned directory");
+
+        assert_eq!(relocated, 0);
+        assert_eq!(
+            fs::read_to_string(cloned_dir.join("metadata.txt")).unwrap(),
+            original
+        );
     }
 
     #[test]

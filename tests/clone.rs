@@ -54,6 +54,40 @@ fn reapplying_clones_replaces_existing_destinations() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn cloned_python_venvs_are_relocated_to_the_worktree() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let source = Dir::new();
+    let worktree = Dir::new();
+    source.write(".venv/pyvenv.cfg", "home = /opt/homebrew/bin\n");
+    let source_root = source.path().canonicalize().expect("canonicalizing source");
+    let worktree_root = worktree
+        .path()
+        .canonicalize()
+        .expect("canonicalizing worktree");
+    let tool = source.write(
+        ".venv/bin/tool",
+        &format!("#!{}/.venv/bin/python3\n", source_root.display()),
+    );
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+        .expect("setting executable mode");
+
+    bootstrap::clone_files(source.path(), worktree.path(), &[".venv".to_string()])
+        .expect("venv clone should run on APFS");
+
+    let cloned_tool = worktree.path().join(".venv/bin/tool");
+    assert_eq!(
+        std::fs::read_to_string(&cloned_tool).unwrap(),
+        format!("#!{}/.venv/bin/python3\n", worktree_root.display())
+    );
+    assert_eq!(
+        std::fs::metadata(cloned_tool).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn cloning_a_nested_file_never_follows_a_destination_parent_symlink() {
     let source = Dir::new();
     source.write("models/cache/item.bin", "SOURCE");
